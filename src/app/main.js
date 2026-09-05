@@ -736,6 +736,12 @@ async function handleSelectionForward() {
     return;
   }
 
+  if (syncWorkspaceToSelection(selectedDocuments).length === 0) {
+    renderPageManager();
+    showWorkflowStep('page-manager');
+    return;
+  }
+
   pendingPdfDocuments = [];
   await startPreparation(selectedDocuments);
 }
@@ -791,10 +797,7 @@ function workspaceMatchesSelection(selectedDocuments) {
 }
 
 function getExistingFiles() {
-  return [
-    ...selectedPdfDocuments,
-    ...getState().documents.map((documentData) => ({ file: documentData.file })),
-  ];
+  return selectedPdfDocuments;
 }
 
 async function renderPdfSelection(files, { append = false } = {}) {
@@ -926,37 +929,48 @@ async function startPreparation(selectedDocuments, { append = false } = {}) {
   showPdfLoadingScreen();
   preparationInProgress = true;
 
-  await handlePdfs(selectedDocuments, { append });
+  await handlePdfs(selectedDocuments);
   preparationInProgress = false;
 }
 
-async function handlePdfs(selectedDocuments, { append = false } = {}) {
+async function handlePdfs(selectedDocuments) {
   pdfStatus.innerHTML = '';
 
   try {
     choosePdfButton.disabled = true;
     choosePdfButton.textContent = 'Loading…';
 
-    if (!append) {
-      clearWorkspace();
-      pageGrid.innerHTML = '';
+    if (workspaceMatchesSelection(selectedDocuments)) {
+      showWorkflowStep('page-manager');
+      return;
     }
 
-    const totalPages = selectedDocuments.reduce(
+    const documentsToPrepare = syncWorkspaceToSelection(selectedDocuments);
+
+    if (documentsToPrepare.length === 0) {
+      renderPageManager();
+      showWorkflowStep('page-manager');
+      return;
+    }
+
+    const totalPages = documentsToPrepare.reduce(
       (total, { pdf }) => total + pdf.numPages,
       0
     );
-    const totalWork = selectedDocuments.length + totalPages * 2;
+    const totalWork = documentsToPrepare.length + totalPages * 2;
     let completedWork = 0;
 
     updatePdfLoadingProgress(0, 'Preparing documents…');
 
+    const state = getState();
+
     for (
       let documentIndex = 0;
-      documentIndex < selectedDocuments.length;
+      documentIndex < documentsToPrepare.length;
       documentIndex += 1
     ) {
-      const { file, pdf } = selectedDocuments[documentIndex];
+      const selectedDocument = documentsToPrepare[documentIndex];
+      const { file, pdf } = selectedDocument;
 
       const documentId = `document-${Date.now()}-${documentSequence}`;
       documentSequence += 1;
@@ -972,7 +986,7 @@ async function handlePdfs(selectedDocuments, { append = false } = {}) {
       completedWork += 1;
       updatePdfLoadingProgress(
         completedWork / totalWork,
-        `Loading document ${documentIndex + 1} of ${selectedDocuments.length}`
+        `Loading document ${documentIndex + 1} of ${documentsToPrepare.length}`
       );
 
       for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -988,7 +1002,7 @@ async function handlePdfs(selectedDocuments, { append = false } = {}) {
         completedWork += 1;
         updatePdfLoadingProgress(
           completedWork / totalWork,
-          `Preparing pages for document ${documentIndex + 1} of ${selectedDocuments.length}`
+          `Preparing pages for document ${documentIndex + 1} of ${documentsToPrepare.length}`
         );
         await yieldToBrowser();
 
@@ -1006,6 +1020,7 @@ async function handlePdfs(selectedDocuments, { append = false } = {}) {
     }
 
     updatePageManagerStats();
+    renderPageManager();
     updatePdfLoadingProgress(1, 'Workspace ready');
     pdfStatus.innerHTML = createPdfSuccessMessage();
     updateSelectedPdfCount();
@@ -1033,6 +1048,44 @@ async function handlePdfs(selectedDocuments, { append = false } = {}) {
     choosePdfButton.disabled = false;
     choosePdfButton.textContent = 'Choose PDF(s)';
   }
+}
+
+function syncWorkspaceToSelection(selectedDocuments) {
+  const state = getState();
+  const retainedDocuments = selectedDocuments
+    .map(({ file }) => state.documents.find((documentData) => (
+      getFileKey(documentData.file) === getFileKey(file)
+    )))
+    .filter(Boolean);
+  const retainedDocumentIds = new Set(
+    retainedDocuments.map(({ id }) => id)
+  );
+  const retainedPages = state.pages.filter((page) => (
+    page.blank || retainedDocumentIds.has(page.documentId)
+  ));
+  const pagesByDocumentId = new Map();
+
+  retainedPages.forEach((page) => {
+    if (!pagesByDocumentId.has(page.documentId)) {
+      pagesByDocumentId.set(page.documentId, []);
+    }
+
+    pagesByDocumentId.get(page.documentId).push(page);
+  });
+
+  state.documents.length = 0;
+  state.documents.push(...retainedDocuments);
+  state.pages = retainedDocuments.flatMap(({ id }) => (
+    pagesByDocumentId.get(id) || []
+  ));
+  state.pages.push(...(pagesByDocumentId.get(null) || []));
+  pageGrid.innerHTML = '';
+
+  return selectedDocuments.filter(({ file }) => (
+    !state.documents.some((documentData) => (
+      isSameFile(documentData.file, file)
+    ))
+  ));
 }
 
 function createPdfSuccessMessage() {
