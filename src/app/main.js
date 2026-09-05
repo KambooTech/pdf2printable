@@ -12,6 +12,11 @@ import {
   getPageCounts,
   getState,
 } from '../state/workspace-store.js';
+import {
+  clearPersistedWorkflow,
+  loadWorkflow,
+  saveWorkflow,
+} from '../state/workflow-persistence.js';
 
 const app = document.querySelector('#app');
 
@@ -29,9 +34,6 @@ app.innerHTML = `
         <span class="brand-name">PDF 2 PRINTABLE</span>
       </a>
 
-      <a class="home-link" href="/">
-        ← Home
-      </a>
     </header>
 
     <main class="workspace">
@@ -422,6 +424,8 @@ let preparationFailed = false;
 let preparationInProgress = false;
 let documentSequence = 0;
 let pdfPendingRemovalKey = null;
+let persistenceWrite = Promise.resolve();
+let restoringWorkflow = false;
 
 const workflowStepTitles = {
   'pdf-selection': 'Select PDF Files',
@@ -446,6 +450,7 @@ choosePdfButton.addEventListener('click', (event) => {
 
 startConversionButton.addEventListener('click', () => {
   openPdfSelection('initial');
+  persistWorkflow();
 });
 
 pdfInput.addEventListener('change', async (event) => {
@@ -475,6 +480,7 @@ pdfInput.addEventListener('change', async (event) => {
   }
 
   showWorkflowStep('pdf-selection');
+  persistWorkflow();
 
   // Same PDF ko dobara select karne ki permission
   pdfInput.value = '';
@@ -601,6 +607,7 @@ uploadZone.addEventListener('drop', async (event) => {
   await yieldToBrowser();
   await renderPdfSelection(files);
   showWorkflowStep('pdf-selection');
+  persistWorkflow();
 });
 
 function escapeHtml(value) {
@@ -614,6 +621,133 @@ function escapeHtml(value) {
 
 function getFileKey(file) {
   return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function persistWorkflow() {
+  if (restoringWorkflow || currentWorkflowStep === 'upload') {
+    return;
+  }
+
+  const state = getState();
+  const files = selectedPdfDocuments.map(({ file }) => file);
+
+  state.documents.forEach(({ file }) => {
+    if (!files.some((selectedFile) => getFileKey(selectedFile) === getFileKey(file))) {
+      files.push(file);
+    }
+  });
+
+  const workflow = {
+    version: 1,
+    currentWorkflowStep,
+    selectionMode,
+    files,
+    documents: state.documents.map(({ id, name, file, pageCount }) => ({
+      id,
+      name,
+      fileKey: getFileKey(file),
+      pageCount,
+    })),
+    pages: state.pages.map(({ id, documentId, pageNumber, removed, blank }) => ({
+      id,
+      documentId,
+      pageNumber,
+      removed,
+      blank,
+    })),
+  };
+
+  persistenceWrite = persistenceWrite
+    .then(() => saveWorkflow(workflow))
+    .catch(() => {});
+}
+
+async function restoreWorkflow() {
+  restoringWorkflow = true;
+
+  try {
+    const workflow = await loadWorkflow();
+
+    if (!workflow || workflow.version !== 1 || !Array.isArray(workflow.files) ||
+      !Array.isArray(workflow.documents) || !Array.isArray(workflow.pages)) {
+      return;
+    }
+
+    const filesByKey = new Map(
+      workflow.files
+        .filter((file) => file instanceof File)
+        .map((file) => [getFileKey(file), file])
+    );
+    const restoredDocuments = [];
+
+    for (const documentData of workflow.documents) {
+      const file = filesByKey.get(documentData.fileKey);
+
+      if (!file) {
+        throw new Error('Saved PDF data is missing.');
+      }
+
+      restoredDocuments.push({
+        ...documentData,
+        file,
+        pdf: await loadPdf(file),
+      });
+    }
+
+    const state = getState();
+    state.documents.push(...restoredDocuments);
+    state.pages.push(...workflow.pages);
+
+    selectedPdfFiles = workflow.files.filter((file) => file instanceof File);
+    selectedPdfDocuments = selectedPdfFiles.map((file) => ({
+      file,
+      pdf: restoredDocuments.find(({ file: documentFile }) => (
+        getFileKey(documentFile) === getFileKey(file)
+      ))?.pdf,
+      previewReady: true,
+      selectionKey: getFileKey(file),
+    }));
+    selectionMode = workflow.selectionMode || 'initial';
+    renderSelectedPdfList();
+    renderPageManager();
+    showWorkflowStep(workflow.currentWorkflowStep || 'page-manager');
+  } catch (error) {
+    clearWorkspace();
+    await clearPersistedWorkflow().catch(() => {});
+  } finally {
+    restoringWorkflow = false;
+  }
+}
+
+function renderSelectedPdfList() {
+  selectedPdfList.innerHTML = '';
+
+  selectedPdfDocuments.forEach(({ file, pdf }) => {
+    const card = document.createElement('article');
+
+    card.className = 'selected-pdf-card';
+    card.dataset.pdfCardKey = getFileKey(file);
+    card.innerHTML = `
+      <button
+        class="remove-pdf-button"
+        type="button"
+        data-remove-pdf-key="${escapeHtml(getFileKey(file))}"
+        aria-label="Remove PDF"
+        title="Remove PDF"
+      >
+        ×
+      </button>
+      <div class="selected-pdf-preview"></div>
+      <div class="selected-pdf-info">
+        <strong>${escapeHtml(file.name)}</strong>
+        <span>${pdf?.numPages || 0} pages</span>
+      </div>
+    `;
+    selectedPdfList.appendChild(card);
+  });
+
+  updateSelectedPdfCount();
+  selectPdfNextButton.disabled = selectedPdfDocuments.length === 0;
 }
 
 function updateSelectedPdfCount() {
@@ -656,6 +790,7 @@ function removeSelectedPdf(selectionKey) {
   card?.remove();
   updateSelectedPdfCount();
   selectPdfNextButton.disabled = selectedPdfDocuments.length === 0;
+  persistWorkflow();
 }
 
 function openPdfSelection(mode) {
@@ -691,6 +826,9 @@ function showWorkflowStep(step) {
   workflowStepSubtitle.textContent = workflowStepSubtitles[step] || '';
   workflowStepSubtitle.hidden = !workflowStepSubtitles[step];
   updateWorkflowNavigation();
+  if (step !== 'upload') {
+    persistWorkflow();
+  }
 }
 
 function updateWorkflowNavigation() {
@@ -733,12 +871,14 @@ async function handleSelectionForward() {
     workspaceMatchesSelection(selectedDocuments)
   ) {
     showWorkflowStep('page-manager');
+    persistWorkflow();
     return;
   }
 
   if (syncWorkspaceToSelection(selectedDocuments).length === 0) {
     renderPageManager();
     showWorkflowStep('page-manager');
+    persistWorkflow();
     return;
   }
 
@@ -779,6 +919,9 @@ function cancelWorkflow() {
   pdfStatus.innerHTML = '';
   pdfWorkflowError.hidden = true;
   showWorkflowStep('upload');
+  persistenceWrite = persistenceWrite
+    .then(() => clearPersistedWorkflow())
+    .catch(() => {});
 }
 
 function isSameFile(firstFile, secondFile) {
@@ -914,6 +1057,7 @@ async function renderPdfSelection(files, { append = false } = {}) {
 
   updatePdfLoadingProgress(1, 'PDF selection ready');
   updateWorkflowNavigation();
+  persistWorkflow();
 }
 
 
@@ -1027,6 +1171,7 @@ async function handlePdfs(selectedDocuments) {
     pendingPdfDocuments = [];
     selectionMode = 'initial';
     showWorkflowStep('page-manager');
+    persistWorkflow();
 
   } catch (error) {
     console.error(error);
@@ -1169,6 +1314,8 @@ function renderPageManager() {
 
     renderThumbnail(page, card.querySelector('.page-thumbnail'));
   });
+
+  persistWorkflow();
 }
 
 
@@ -1354,3 +1501,5 @@ async function renderThumbnail(pageData, canvas) {
     0.35
   );
 }
+
+restoreWorkflow();
