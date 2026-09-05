@@ -16,10 +16,11 @@ export async function loadPdf(file) {
 
   const arrayBuffer = await file.arrayBuffer();
 
-  const pdf = await pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
-    isEvalSupported: false,
-  }).promise;
+ const pdf = await pdfjsLib.getDocument({
+  data: new Uint8Array(arrayBuffer),
+  isEvalSupported: false,
+  wasmUrl: '/node_modules/pdfjs-dist/wasm/',
+}).promise;
 
   return pdf;
 }
