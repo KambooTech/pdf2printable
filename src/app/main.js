@@ -9,8 +9,10 @@ import {
   addDocument,
   addPages,
   clearWorkspace,
+  getLayoutConfig,
   getPageCounts,
   getState,
+  updateLayoutConfig,
 } from '../state/workspace-store.js';
 import {
   clearPersistedWorkflow,
@@ -22,6 +24,20 @@ const app = document.querySelector('#app');
 
 app.innerHTML = `
   <div class="app-page">
+
+    <div
+      id="workflowRestoreLoader"
+      class="workflow-restore-loader"
+      role="status"
+      aria-live="polite"
+    >
+      <div class="workflow-restore-spinner" aria-hidden="true"></div>
+      <p>Restoring your workspace…</p>
+    </div>
+
+    <div id="workflowRestoreToast" class="workflow-restore-toast" role="status" aria-live="polite" hidden>
+      Refresh successful
+    </div>
 
     <header class="app-header">
       <a class="brand" href="/">
@@ -270,13 +286,73 @@ app.innerHTML = `
 </section>
 
 <section
-  class="workflow-placeholder workflow-step"
+  id="layoutScreen"
+  class="layout-screen workflow-step"
   data-workflow-step="layout"
   hidden
 >
-  <span class="workflow-placeholder-icon">▦</span>
-  <h2>Layout</h2>
-  <p>Choose how many printable slides should appear on each page.</p>
+  <div class="layout-header">
+    <h2>Choose Layout</h2>
+    <p>Select how your pages should be arranged on A4.</p>
+  </div>
+
+  <div class="layout-options">
+    <fieldset class="layout-option-group">
+      <legend>A4 orientation</legend>
+      <div class="layout-choice-grid layout-orientation-choices">
+        <label class="layout-choice-card">
+          <input type="radio" name="orientation" value="portrait" />
+          <span class="layout-choice-content">
+            <strong>A4 Portrait</strong>
+          </span>
+        </label>
+        <label class="layout-choice-card">
+          <input type="radio" name="orientation" value="landscape" />
+          <span class="layout-choice-content">
+            <strong>A4 Landscape</strong>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="layout-option-group">
+      <legend>Slides per A4</legend>
+      <div class="layout-choice-grid layout-slides-choices">
+        ${[1, 2, 3, 4, 6, 8, 10].map((slides) => `
+          <label class="layout-choice-card">
+            <input type="radio" name="slidesPerA4" value="${slides}" />
+            <span class="layout-choice-content">
+              <strong>${slides} slide${slides === 1 ? '' : 's'} / A4</strong>
+            </span>
+          </label>
+        `).join('')}
+      </div>
+    </fieldset>
+
+    <fieldset class="layout-option-group">
+      <legend>Border</legend>
+      <div class="layout-choice-grid layout-border-choices">
+        <label class="layout-choice-card">
+          <input type="radio" name="border" value="on" />
+          <span class="layout-choice-content">
+            <strong>Border ON</strong>
+          </span>
+        </label>
+        <label class="layout-choice-card">
+          <input type="radio" name="border" value="off" />
+          <span class="layout-choice-content">
+            <strong>Border OFF</strong>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+  </div>
+
+  <div class="layout-continue">
+    <button id="continueLayoutButton" class="continue-pages-button" type="button">
+      Continue →
+    </button>
+  </div>
 </section>
 
 <section
@@ -384,6 +460,8 @@ const choosePdfButton = document.querySelector('#choosePdfButton');
 const startConversionButton = document.querySelector('#startConversionButton');
 const uploadZone = document.querySelector('#uploadZone');
 const pdfStatus = document.querySelector('#pdfStatus');
+const workflowRestoreLoader = document.querySelector('#workflowRestoreLoader');
+const workflowRestoreToast = document.querySelector('#workflowRestoreToast');
 
 const pdfWorkflow = document.querySelector('#pdfWorkflow');
 const pageManager = document.querySelector('#pageManager');
@@ -413,7 +491,10 @@ const workflowBackButton = document.querySelector('#workflowBackButton');
 const workflowForwardButton = document.querySelector('#workflowForwardButton');
 const workflowCancelButton = document.querySelector('#workflowCancelButton');
 const continuePagesButton = document.querySelector('#continuePagesButton');
+const continueLayoutButton = document.querySelector('#continueLayoutButton');
+const layoutScreen = document.querySelector('#layoutScreen');
 const workflowStepElements = document.querySelectorAll('[data-workflow-step]');
+const layoutInputs = layoutScreen.querySelectorAll('input');
 
 let selectedPdfFiles = [];
 let selectedPdfDocuments = [];
@@ -534,7 +615,7 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-workflowBackButton.addEventListener('click', () => {
+workflowBackButton.addEventListener('click', async () => {
   if (currentWorkflowStep === 'page-manager') {
     showWorkflowStep('pdf-selection');
     selectionMode = 'initial';
@@ -561,6 +642,10 @@ workflowBackButton.addEventListener('click', () => {
   const previousStep = previousSteps[currentWorkflowStep];
 
   if (previousStep) {
+    if (previousStep === 'page-manager') {
+      await renderPageManager();
+    }
+
     showWorkflowStep(previousStep);
   }
 });
@@ -575,6 +660,31 @@ workflowCancelButton.addEventListener('click', () => {
 
 continuePagesButton.addEventListener('click', () => {
   showWorkflowStep('layout');
+});
+
+continueLayoutButton.addEventListener('click', () => {
+  showWorkflowStep('conversion');
+});
+
+layoutInputs.forEach((input) => {
+  input.addEventListener('change', () => {
+    const updates = {};
+
+    if (input.name === 'orientation') {
+      updates.orientation = input.value;
+    }
+
+    if (input.name === 'slidesPerA4') {
+      updates.slidesPerA4 = Number(input.value);
+    }
+
+    if (input.name === 'border') {
+      updates.border = input.value === 'on';
+    }
+
+    updateLayoutConfig(updates);
+    persistWorkflow();
+  });
 });
 
 
@@ -629,11 +739,17 @@ function persistWorkflow() {
   }
 
   const state = getState();
-  const files = selectedPdfDocuments.map(({ file }) => file);
+  const sourceFiles = [...selectedPdfFiles];
+
+  selectedPdfDocuments.forEach(({ file }) => {
+    if (!sourceFiles.some((selectedFile) => getFileKey(selectedFile) === getFileKey(file))) {
+      sourceFiles.push(file);
+    }
+  });
 
   state.documents.forEach(({ file }) => {
-    if (!files.some((selectedFile) => getFileKey(selectedFile) === getFileKey(file))) {
-      files.push(file);
+    if (!sourceFiles.some((selectedFile) => getFileKey(selectedFile) === getFileKey(file))) {
+      sourceFiles.push(file);
     }
   });
 
@@ -641,7 +757,7 @@ function persistWorkflow() {
     version: 1,
     currentWorkflowStep,
     selectionMode,
-    files,
+    files: [],
     documents: state.documents.map(({ id, name, file, pageCount }) => ({
       id,
       name,
@@ -655,15 +771,48 @@ function persistWorkflow() {
       removed,
       blank,
     })),
+    layout: { ...getLayoutConfig() },
   };
 
   persistenceWrite = persistenceWrite
-    .then(() => saveWorkflow(workflow))
+    .then(async () => {
+      workflow.files = await Promise.all(sourceFiles.map(serializeFile));
+      await saveWorkflow(workflow);
+    })
     .catch(() => {});
+}
+
+async function serializeFile(file) {
+  return {
+    name: file.name,
+    type: file.type,
+    lastModified: file.lastModified,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  };
+}
+
+function restoreFile(fileData) {
+  if (fileData instanceof File) {
+    return fileData;
+  }
+
+  if (!fileData || !fileData.bytes || !fileData.name) {
+    throw new Error('Saved PDF data is missing.');
+  }
+
+  const bytes = fileData.bytes instanceof Uint8Array
+    ? fileData.bytes
+    : new Uint8Array(fileData.bytes);
+
+  return new File([bytes], fileData.name, {
+    type: fileData.type || 'application/pdf',
+    lastModified: fileData.lastModified || Date.now(),
+  });
 }
 
 async function restoreWorkflow() {
   restoringWorkflow = true;
+  let restored = false;
 
   try {
     const workflow = await loadWorkflow();
@@ -673,12 +822,12 @@ async function restoreWorkflow() {
       return;
     }
 
+    const restoredFiles = workflow.files.map(restoreFile);
     const filesByKey = new Map(
-      workflow.files
-        .filter((file) => file instanceof File)
-        .map((file) => [getFileKey(file), file])
+      restoredFiles.map((file) => [getFileKey(file), file])
     );
     const restoredDocuments = [];
+    const restoredPdfsByKey = new Map();
 
     for (const documentData of workflow.documents) {
       const file = filesByKey.get(documentData.fileKey);
@@ -687,39 +836,73 @@ async function restoreWorkflow() {
         throw new Error('Saved PDF data is missing.');
       }
 
+      const pdf = await loadPdf(file);
+      restoredPdfsByKey.set(getFileKey(file), pdf);
       restoredDocuments.push({
         ...documentData,
         file,
-        pdf: await loadPdf(file),
+        pageCount: pdf.numPages,
+        pdf,
+      });
+    }
+
+    const restoredSelectedDocuments = [];
+
+    for (const file of restoredFiles) {
+      const fileKey = getFileKey(file);
+      const pdf = restoredPdfsByKey.get(fileKey) || await loadPdf(file);
+
+      restoredPdfsByKey.set(fileKey, pdf);
+      restoredSelectedDocuments.push({
+        file,
+        pdf,
+        previewReady: true,
+        selectionKey: fileKey,
       });
     }
 
     const state = getState();
     state.documents.push(...restoredDocuments);
     state.pages.push(...workflow.pages);
+    updateLayoutConfig({
+      orientation: workflow.layout?.orientation === 'landscape'
+        ? 'landscape'
+        : 'portrait',
+      slidesPerA4: [1, 2, 3, 4, 6, 8, 10].includes(workflow.layout?.slidesPerA4)
+        ? workflow.layout.slidesPerA4
+        : 3,
+      border: workflow.layout?.border === true,
+    });
 
-    selectedPdfFiles = workflow.files.filter((file) => file instanceof File);
-    selectedPdfDocuments = selectedPdfFiles.map((file) => ({
-      file,
-      pdf: restoredDocuments.find(({ file: documentFile }) => (
-        getFileKey(documentFile) === getFileKey(file)
-      ))?.pdf,
-      previewReady: true,
-      selectionKey: getFileKey(file),
-    }));
+    selectedPdfDocuments = restoredSelectedDocuments;
+    selectedPdfFiles = restoredSelectedDocuments.map(({ file }) => file);
     selectionMode = workflow.selectionMode || 'initial';
-    renderSelectedPdfList();
-    renderPageManager();
-    showWorkflowStep(workflow.currentWorkflowStep || 'page-manager');
+    await renderSelectedPdfList();
+    await renderPageManager();
+    renderLayoutConfig();
+    const restoredStep = workflow.currentWorkflowStep === 'pdf-preparing'
+      ? 'pdf-selection'
+      : workflow.currentWorkflowStep || 'page-manager';
+
+    showWorkflowStep(restoredStep);
+    restored = true;
   } catch (error) {
     clearWorkspace();
     await clearPersistedWorkflow().catch(() => {});
   } finally {
     restoringWorkflow = false;
+    workflowRestoreLoader.hidden = true;
+
+    if (restored) {
+      workflowRestoreToast.hidden = false;
+      window.setTimeout(() => {
+        workflowRestoreToast.hidden = true;
+      }, 1000);
+    }
   }
 }
 
-function renderSelectedPdfList() {
+async function renderSelectedPdfList() {
   selectedPdfList.innerHTML = '';
 
   selectedPdfDocuments.forEach(({ file, pdf }) => {
@@ -746,8 +929,35 @@ function renderSelectedPdfList() {
     selectedPdfList.appendChild(card);
   });
 
+  await Promise.all(
+    Array.from(selectedPdfList.querySelectorAll('.selected-pdf-card'))
+      .map((card) => renderPdfSelectionThumbnail(
+        selectedPdfDocuments.find(({ file }) => (
+          getFileKey(file) === card.dataset.pdfCardKey
+        ))?.pdf,
+        card.querySelector('.selected-pdf-preview'),
+        true
+      ))
+  );
+
   updateSelectedPdfCount();
   selectPdfNextButton.disabled = selectedPdfDocuments.length === 0;
+}
+
+async function renderPdfSelectionThumbnail(pdf, container, replace = false) {
+  if (!pdf || !container) {
+    throw new Error('Saved PDF document is unavailable.');
+  }
+
+  if (replace) {
+    container.innerHTML = '';
+  }
+
+  const page = await pdf.getPage(1);
+  const canvas = document.createElement('canvas');
+
+  await renderPageToCanvas(page, canvas, 0.5);
+  container.appendChild(canvas);
 }
 
 function updateSelectedPdfCount() {
@@ -825,10 +1035,27 @@ function showWorkflowStep(step) {
   workflowStepTitle.textContent = workflowStepTitles[step] || 'PDF 2 PRINTABLE';
   workflowStepSubtitle.textContent = workflowStepSubtitles[step] || '';
   workflowStepSubtitle.hidden = !workflowStepSubtitles[step];
+  if (step === 'layout') {
+    renderLayoutConfig();
+  }
   updateWorkflowNavigation();
   if (step !== 'upload') {
     persistWorkflow();
   }
+}
+
+function renderLayoutConfig() {
+  const layout = getLayoutConfig();
+
+  layoutScreen.querySelector(
+    `input[name="orientation"][value="${layout.orientation}"]`
+  ).checked = true;
+  layoutScreen.querySelector(
+    `input[name="slidesPerA4"][value="${layout.slidesPerA4}"]`
+  ).checked = true;
+  layoutScreen.querySelector(
+    `input[name="border"][value="${layout.border ? 'on' : 'off'}"]`
+  ).checked = true;
 }
 
 function updateWorkflowNavigation() {
@@ -848,7 +1075,8 @@ function updateWorkflowNavigation() {
 
   workflowForwardButton.hidden =
     currentWorkflowStep === 'pdf-selection' ||
-    currentWorkflowStep === 'page-manager';
+    currentWorkflowStep === 'page-manager' ||
+    currentWorkflowStep === 'layout';
 
   workflowForwardButton.disabled =
     (isPreparing && !preparationFailed) ||
@@ -876,7 +1104,7 @@ async function handleSelectionForward() {
   }
 
   if (syncWorkspaceToSelection(selectedDocuments).length === 0) {
-    renderPageManager();
+    await renderPageManager();
     showWorkflowStep('page-manager');
     persistWorkflow();
     return;
@@ -1092,7 +1320,7 @@ async function handlePdfs(selectedDocuments) {
     const documentsToPrepare = syncWorkspaceToSelection(selectedDocuments);
 
     if (documentsToPrepare.length === 0) {
-      renderPageManager();
+      await renderPageManager();
       showWorkflowStep('page-manager');
       return;
     }
@@ -1164,7 +1392,7 @@ async function handlePdfs(selectedDocuments) {
     }
 
     updatePageManagerStats();
-    renderPageManager();
+    await renderPageManager();
     updatePdfLoadingProgress(1, 'Workspace ready');
     pdfStatus.innerHTML = createPdfSuccessMessage();
     updateSelectedPdfCount();
@@ -1299,7 +1527,7 @@ function yieldToBrowser() {
   });
 }
 
-function renderPageManager() {
+async function renderPageManager() {
   const state = getState();
 
   pageManager.hidden = state.pages.length === 0;
@@ -1307,14 +1535,15 @@ function renderPageManager() {
 
   pageGrid.innerHTML = '';
 
-  state.pages.forEach((page, index) => {
+  const thumbnailPromises = state.pages.map((page, index) => {
     const card = createPageCard(page, index);
 
     pageGrid.appendChild(card);
 
-    renderThumbnail(page, card.querySelector('.page-thumbnail'));
+    return renderThumbnail(page, card.querySelector('.page-thumbnail'));
   });
 
+  await Promise.all(thumbnailPromises);
   persistWorkflow();
 }
 

@@ -1,6 +1,11 @@
 const state = {
   documents: [],
   pages: [],
+  layout: {
+    orientation: 'portrait',
+    slidesPerA4: 3,
+    border: false,
+  },
 };
 
 export function getState() {
@@ -18,6 +23,19 @@ export function addPages(pages) {
 export function clearWorkspace() {
   state.documents.length = 0;
   state.pages.length = 0;
+  Object.assign(state.layout, {
+    orientation: 'portrait',
+    slidesPerA4: 3,
+    border: false,
+  });
+}
+
+export function getLayoutConfig() {
+  return state.layout;
+}
+
+export function updateLayoutConfig(updates) {
+  Object.assign(state.layout, updates);
 }
 
 export function updatePage(pageId, updates) {
