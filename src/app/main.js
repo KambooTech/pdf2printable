@@ -1073,6 +1073,8 @@ function updateWorkflowNavigation() {
     (isSelection && selectionMode === 'initial') ||
     (isPreparing && !preparationFailed);
 
+  workflowBackButton.hidden = isSelection;
+
   workflowForwardButton.hidden =
     currentWorkflowStep === 'pdf-selection' ||
     currentWorkflowStep === 'page-manager' ||
