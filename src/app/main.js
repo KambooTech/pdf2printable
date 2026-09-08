@@ -20,6 +20,128 @@ import {
   saveWorkflow,
 } from '../state/workflow-persistence.js';
 
+const layoutDefinitions = [
+  {
+    id: 'one-portrait', slides: 1, orientation: 'portrait', category: 'grid',
+    badge: 'Full', description: 'Portrait • Full Page', columns: 1, rows: 1,
+  },
+  {
+    id: 'two-portrait', slides: 2, orientation: 'portrait', category: 'grid',
+    description: 'Portrait • 1×2 Grid', columns: 1, rows: 2,
+  },
+  {
+    id: 'three-portrait', slides: 3, orientation: 'portrait', category: 'grid',
+    badge: 'Popular', description: 'Portrait • 1×3 Grid', columns: 1, rows: 3,
+  },
+  {
+    id: 'four-landscape', slides: 4, orientation: 'landscape', category: 'grid',
+    description: 'Landscape • 2×2 Best for Reading', columns: 2, rows: 2,
+  },
+  {
+    id: 'six-landscape', slides: 6, orientation: 'landscape', category: 'grid',
+    description: 'Landscape • 3×2 Grid', columns: 2, rows: 3,
+  },
+  {
+    id: 'eight-portrait', slides: 8, orientation: 'portrait', category: 'grid',
+    badge: 'Recommended', description: 'Portrait • 4×2 Paper Saving', columns: 2, rows: 4,
+  },
+  {
+    id: 'ten-portrait', slides: 10, orientation: 'portrait', category: 'grid',
+    badge: 'Compact', description: 'Portrait • 5×2 Grid', columns: 2, rows: 5,
+  },
+  {
+    id: 'three-quick-note', slides: 3, orientation: 'portrait', category: 'quick-note',
+    badge: 'New', description: 'Portrait • 1×3 + Quick Note', columns: 1, rows: 3, quickNote: true,
+  },
+  {
+    id: 'six-quick-note', slides: 6, orientation: 'landscape', category: 'quick-note',
+    badge: 'New', description: 'Landscape • 3×2 + Quick Note', columns: 2, rows: 3, quickNote: true,
+  },
+];
+
+let activeLayoutCategory = 'all';
+let activeLayoutOrientation = 'all';
+let activeSelectedLayoutId = 'three-portrait';
+
+function createLayoutPreview(definition) {
+  const slideMarkup = Array.from(
+    { length: definition.slides },
+    (_, index) => `
+      <span class="layout-preview-slide">
+        <strong>${index + 1}</strong>
+        <i></i><i></i><i></i>
+      </span>
+    `
+  ).join('');
+
+  return `
+    <div
+      class="layout-preview-sheet layout-preview-${definition.slides} ${definition.quickNote ? 'has-quick-note' : ''}"
+      style="--preview-columns: ${definition.columns}; --preview-rows: ${definition.rows};"
+      aria-hidden="true"
+    >
+      <div class="layout-preview-grid">${slideMarkup}</div>
+      ${definition.quickNote ? '<div class="layout-preview-note"><strong>Quick Note</strong><i></i><i></i></div>' : ''}
+    </div>
+  `;
+}
+
+function createLayoutCard(definition) {
+  return `
+    <label class="layout-card">
+      <input
+        type="radio"
+        name="slidesPerA4"
+        value="${definition.slides}"
+        data-layout-id="${definition.id}"
+        data-layout-orientation="${definition.orientation}"
+      />
+      <span class="layout-card-content">
+        <span class="layout-card-heading">
+          <strong>${definition.slides} Slide${definition.slides === 1 ? '' : 's'}</strong>
+          <span class="layout-card-meta">
+            ${definition.badge ? `<em class="layout-badge layout-badge-${definition.badge.toLowerCase()}">${definition.badge}</em>` : ''}
+            <em class="layout-orientation-badge">${capitalize(definition.orientation)}</em>
+          </span>
+        </span>
+        ${createLayoutPreview(definition)}
+        <span class="layout-card-description">${definition.description}</span>
+        <span class="layout-card-check" aria-hidden="true">✓</span>
+      </span>
+    </label>
+  `;
+}
+
+function getVisibleLayoutDefinitions() {
+  return layoutDefinitions.filter((definition) => {
+    const matchesCategory = activeLayoutCategory === 'all' ||
+      definition.category === activeLayoutCategory;
+    const matchesOrientation = activeLayoutOrientation === 'all' ||
+      definition.orientation === activeLayoutOrientation;
+
+    return matchesCategory && matchesOrientation;
+  });
+}
+
+function renderLayoutCards() {
+  const cards = layoutScreen.querySelector('.layout-cards');
+  cards.innerHTML = getVisibleLayoutDefinitions().map(createLayoutCard).join('');
+  syncLayoutSelection();
+}
+
+function syncLayoutSelection() {
+  const layout = getLayoutConfig();
+  const matchingInput = layoutScreen.querySelector(
+    `input[name="slidesPerA4"][data-layout-id="${activeSelectedLayoutId}"][value="${layout.slidesPerA4}"][data-layout-orientation="${layout.orientation}"]`
+  ) || layoutScreen.querySelector(
+    `input[name="slidesPerA4"][value="${layout.slidesPerA4}"][data-layout-orientation="${layout.orientation}"]`
+  );
+
+  layoutScreen.querySelectorAll('input[name="slidesPerA4"]').forEach((input) => {
+    input.checked = input === matchingInput;
+  });
+}
+
 const app = document.querySelector('#app');
 
 app.innerHTML = `
@@ -292,65 +414,38 @@ app.innerHTML = `
   hidden
 >
   <div class="layout-header">
-    <h2>Choose Layout</h2>
-    <p>Select how your pages should be arranged on A4.</p>
+    <h2>Choose Your Layout</h2>
+    <p>Select the best layout format for your printable notes.</p>
   </div>
 
-  <div class="layout-options">
-    <fieldset class="layout-option-group">
-      <legend>A4 orientation</legend>
-      <div class="layout-choice-grid layout-orientation-choices">
-        <label class="layout-choice-card">
-          <input type="radio" name="orientation" value="portrait" />
-          <span class="layout-choice-content">
-            <strong>A4 Portrait</strong>
-          </span>
-        </label>
-        <label class="layout-choice-card">
-          <input type="radio" name="orientation" value="landscape" />
-          <span class="layout-choice-content">
-            <strong>A4 Landscape</strong>
-          </span>
-        </label>
-      </div>
-    </fieldset>
+  <div class="layout-filters" aria-label="Layout filters">
+    <div class="layout-category-filters" role="tablist" aria-label="Layout category">
+      <button class="layout-filter-button is-active" type="button" data-layout-category="all" role="tab" aria-selected="true">All Layouts</button>
+      <button class="layout-filter-button" type="button" data-layout-category="grid" role="tab" aria-selected="false">Grid Layouts</button>
+      <button class="layout-filter-button" type="button" data-layout-category="quick-note" role="tab" aria-selected="false">Quick Note</button>
+    </div>
 
-    <fieldset class="layout-option-group">
-      <legend>Slides per A4</legend>
-      <div class="layout-choice-grid layout-slides-choices">
-        ${[1, 2, 3, 4, 6, 8, 10].map((slides) => `
-          <label class="layout-choice-card">
-            <input type="radio" name="slidesPerA4" value="${slides}" />
-            <span class="layout-choice-content">
-              <strong>${slides} slide${slides === 1 ? '' : 's'} / A4</strong>
-            </span>
-          </label>
-        `).join('')}
-      </div>
-    </fieldset>
-
-    <fieldset class="layout-option-group">
-      <legend>Border</legend>
-      <div class="layout-choice-grid layout-border-choices">
-        <label class="layout-choice-card">
-          <input type="radio" name="border" value="on" />
-          <span class="layout-choice-content">
-            <strong>Border ON</strong>
-          </span>
-        </label>
-        <label class="layout-choice-card">
-          <input type="radio" name="border" value="off" />
-          <span class="layout-choice-content">
-            <strong>Border OFF</strong>
-          </span>
-        </label>
-      </div>
-    </fieldset>
+    <div class="layout-orientation-filters" role="group" aria-label="Orientation filter">
+      <label class="layout-filter-toggle">
+        <input type="radio" name="orientation-filter" value="all" checked />
+        <span>All Orientations</span>
+      </label>
+      <label class="layout-filter-toggle">
+        <input type="radio" name="orientation-filter" value="portrait" />
+        <span>Portrait</span>
+      </label>
+      <label class="layout-filter-toggle">
+        <input type="radio" name="orientation-filter" value="landscape" />
+        <span>Landscape</span>
+      </label>
+    </div>
   </div>
+
+  <div class="layout-cards" aria-live="polite"></div>
 
   <div class="layout-continue">
     <button id="continueLayoutButton" class="continue-pages-button" type="button">
-      Continue →
+      Continue with <span id="continueLayoutLabel">3 Slides (Portrait)</span> →
     </button>
   </div>
 </section>
@@ -492,9 +587,9 @@ const workflowForwardButton = document.querySelector('#workflowForwardButton');
 const workflowCancelButton = document.querySelector('#workflowCancelButton');
 const continuePagesButton = document.querySelector('#continuePagesButton');
 const continueLayoutButton = document.querySelector('#continueLayoutButton');
+const continueLayoutLabel = document.querySelector('#continueLayoutLabel');
 const layoutScreen = document.querySelector('#layoutScreen');
 const workflowStepElements = document.querySelectorAll('[data-workflow-step]');
-const layoutInputs = layoutScreen.querySelectorAll('input');
 
 let selectedPdfFiles = [];
 let selectedPdfDocuments = [];
@@ -666,26 +761,55 @@ continueLayoutButton.addEventListener('click', () => {
   showWorkflowStep('conversion');
 });
 
-layoutInputs.forEach((input) => {
-  input.addEventListener('change', () => {
-    const updates = {};
+layoutScreen.addEventListener('click', (event) => {
+  const categoryButton = event.target.closest('[data-layout-category]');
 
-    if (input.name === 'orientation') {
-      updates.orientation = input.value;
-    }
+  if (categoryButton) {
+    activeLayoutCategory = categoryButton.dataset.layoutCategory;
+    layoutScreen.querySelectorAll('[data-layout-category]').forEach((button) => {
+      const isActive = button === categoryButton;
+      button.classList.toggle('is-active', isActive);
+      button.setAttribute('aria-selected', String(isActive));
+    });
+    renderLayoutCards();
+    return;
+  }
 
-    if (input.name === 'slidesPerA4') {
-      updates.slidesPerA4 = Number(input.value);
-    }
+  const card = event.target.closest('.layout-card');
+  const input = card?.querySelector('input[name="slidesPerA4"]');
 
-    if (input.name === 'border') {
-      updates.border = input.value === 'on';
-    }
-
-    updateLayoutConfig(updates);
-    persistWorkflow();
-  });
+  if (input) {
+    input.checked = true;
+    selectLayoutInput(input);
+  }
 });
+
+layoutScreen.addEventListener('change', (event) => {
+  const input = event.target;
+
+  if (input.name === 'orientation-filter') {
+    activeLayoutOrientation = input.value;
+    renderLayoutCards();
+    renderLayoutConfig();
+    return;
+  }
+
+  if (input.name !== 'slidesPerA4') {
+    return;
+  }
+
+  selectLayoutInput(input);
+});
+
+function selectLayoutInput(input) {
+  activeSelectedLayoutId = input.dataset.layoutId;
+  updateLayoutConfig({
+    slidesPerA4: Number(input.value),
+    orientation: input.dataset.layoutOrientation,
+  });
+  renderLayoutConfig();
+  persistWorkflow();
+}
 
 
 
@@ -1047,15 +1171,22 @@ function showWorkflowStep(step) {
 function renderLayoutConfig() {
   const layout = getLayoutConfig();
 
-  layoutScreen.querySelector(
-    `input[name="orientation"][value="${layout.orientation}"]`
-  ).checked = true;
-  layoutScreen.querySelector(
-    `input[name="slidesPerA4"][value="${layout.slidesPerA4}"]`
-  ).checked = true;
-  layoutScreen.querySelector(
-    `input[name="border"][value="${layout.border ? 'on' : 'off'}"]`
-  ).checked = true;
+  layoutScreen.dataset.orientation = layout.orientation;
+  const orientationFilter = layoutScreen.querySelector(
+    `input[name="orientation-filter"][value="${activeLayoutOrientation}"]`
+  );
+
+  if (orientationFilter) {
+    orientationFilter.checked = true;
+  }
+
+  renderLayoutCards();
+  syncLayoutSelection();
+  continueLayoutLabel.textContent = `${layout.slidesPerA4} Slide${layout.slidesPerA4 === 1 ? '' : 's'} (${capitalize(layout.orientation)})`;
+}
+
+function capitalize(value) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function updateWorkflowNavigation() {
